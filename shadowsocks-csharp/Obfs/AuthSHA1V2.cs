@@ -1,3 +1,5 @@
+using CryptoBase.Digests;
+using CryptoBase.Macs.Hmac;
 using System;
 using System.Collections.Generic;
 using System.Security.Cryptography;
@@ -14,12 +16,11 @@ namespace Shadowsocks.Obfs
         }
         private static Dictionary<string, int[]> _obfs = new()
         {
-                {"auth_sha1_v2", new[]{1, 0, 1}}
+            { "auth_sha1_v2", new[] { 1, 0, 1 } }
         };
 
         protected bool has_sent_header;
         protected bool has_recv_header;
-        protected static RNGCryptoServiceProvider g_random = new();
 
         public static List<string> SupportedObfs()
         {
@@ -95,8 +96,7 @@ namespace Shadowsocks.Obfs
                 }
                 if (authData.clientID == null)
                 {
-                    authData.clientID = new byte[8];
-                    g_random.GetBytes(authData.clientID);
+                    authData.clientID = RandomNumberGenerator.GetBytes(8);
                     authData.connectionID = (uint)BitConverter.ToInt64(authData.clientID, 0) % 0xFFFFFD;
                 }
                 authData.connectionID += 1;
@@ -125,14 +125,16 @@ namespace Shadowsocks.Obfs
             var crc32 = Util.CRC32.CalcCRC32(crcdata, crcdata.Length);
             BitConverter.GetBytes((uint)crc32).CopyTo(outdata, 0);
 
-            var key = new byte[Server.Iv.Length + Server.key.Length];
-            Server.Iv.CopyTo(key, 0);
-            Server.key.CopyTo(key, Server.Iv.Length);
+            Span<byte> key = new byte[Server.Iv.Length + Server.key.Length];
+            Server.Iv.AsSpan().CopyTo(key);
+            Server.key.AsSpan().CopyTo(key[Server.Iv.Length..]);
 
-            var sha1 = new HMACSHA1(key);
-            var sha1data = sha1.ComputeHash(outdata, 0, outlength - 10);
+            using var hmac = HmacUtils.Create(DigestType.Sha1, key);
+            hmac.Update(outdata.AsSpan(0, outlength - 10));
+            Span<byte> hash = stackalloc byte[hmac.Length];
+            hmac.GetMac(hash);
 
-            Array.Copy(sha1data, 0, outdata, outlength - 10, 10);
+            hash[..10].CopyTo(outdata.AsSpan(outlength - 10, 10));
         }
 
         public override byte[] ClientPreEncrypt(byte[] plaindata, int datalength, out int outlength)
