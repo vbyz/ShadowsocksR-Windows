@@ -1,15 +1,17 @@
-﻿using Microsoft.Win32;
+using CryptoBase;
+using Microsoft.Win32;
 using Shadowsocks.Controller;
 using Shadowsocks.Enums;
 using Shadowsocks.Model;
 using Shadowsocks.Util;
+using SingleInstance;
 using System;
 using System.IO;
 using System.Linq;
-using System.Net.Sockets;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
+using Utils = Shadowsocks.Util.Utils;
 
 namespace Shadowsocks
 {
@@ -19,16 +21,14 @@ namespace Shadowsocks
         private static void Main(string[] args)
         {
             Directory.SetCurrentDirectory(Path.GetDirectoryName(Utils.GetExecutablePath()) ?? throw new InvalidOperationException());
-            var identifier = $@"Global\{Controller.HttpRequest.UpdateChecker.Name}_{Directory.GetCurrentDirectory().GetDeterministicHashCode()}";
-            using var singleInstance = new SingleInstance.SingleInstance(identifier);
-            if (!singleInstance.IsFirstInstance)
+            var identifier = $@"Global\{Controller.HttpRequest.UpdateChecker.Name}_{Directory.GetCurrentDirectory().GetClassicHashCode()}";
+            using var singleInstance = new SingleInstanceService(identifier);
+            if (!singleInstance.TryStartSingleInstance())
             {
-                singleInstance.PassArgumentsToFirstInstance(args.Length == 0
-                        ? args.Append(Constants.ParameterMultiplyInstance)
-                        : args);
+                SendCommand(singleInstance, args.Length <= 0 ? Constants.ParameterMultiplyInstance : string.Join(' ', args));
                 return;
             }
-            singleInstance.ArgumentsReceived.Subscribe(SingleInstance_ArgumentsReceived);
+            using var d = singleInstance.Received.Subscribe(ArgumentsReceived);
 
             var app = new Application
             {
@@ -58,7 +58,6 @@ namespace Shadowsocks
             Global.ViewController = new MenuViewController(Global.Controller);
             SystemEvents.SessionEnding += Global.ViewController.Quit_Click;
 
-            Global.OSSupportsLocalIPv6 = Socket.OSSupportsIPv6;
             Global.Controller.Reload();
             if (Global.GuiConfig.IsDefaultConfig())
             {
@@ -88,7 +87,7 @@ namespace Shadowsocks
             Reg.SetUrlProtocol(@"ssr");
             Reg.SetUrlProtocol(@"sub");
 
-            singleInstance.ListenForArgumentsFromSuccessiveInstances();
+            singleInstance.StartListenServer();
             app.Run();
         }
 
@@ -157,18 +156,37 @@ namespace Shadowsocks
             }
         }
 
-        private static void SingleInstance_ArgumentsReceived(string[] args)
+        private static void SendCommand(ISingleInstanceService service, string command)
         {
+            try
+            {
+                service.SendMessageToFirstInstanceAsync(command).GetAwaiter().GetResult();
+            }
+            catch
+            {
+                // ignored
+            }
+        }
+
+        private static void ArgumentsReceived((string, Action<string>) receive)
+        {
+            var (message, endFunc) = receive;
+            var args = message
+                .Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .ToHashSet();
+
             if (args.Contains(Constants.ParameterMultiplyInstance))
             {
                 MessageBox.Show(I18NUtil.GetAppStringValue(@"SuccessiveInstancesMessage1") + Environment.NewLine +
                                 I18NUtil.GetAppStringValue(@"SuccessiveInstancesMessage2"),
-                        I18NUtil.GetAppStringValue(@"SuccessiveInstancesCaption"), MessageBoxButton.OK, MessageBoxImage.Information);
+                    I18NUtil.GetAppStringValue(@"SuccessiveInstancesCaption"), MessageBoxButton.OK, MessageBoxImage.Information);
             }
             Application.Current.Dispatcher?.InvokeAsync(() =>
             {
                 Global.ViewController.ImportAddress(string.Join(Environment.NewLine, args));
             });
+
+            endFunc(string.Empty);
         }
     }
 }

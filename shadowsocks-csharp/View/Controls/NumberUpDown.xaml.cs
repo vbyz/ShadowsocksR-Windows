@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Windows;
 using System.Windows.Controls;
 
@@ -32,7 +32,7 @@ namespace Shadowsocks.View.Controls
                 {
                     _numValue = value;
                     TxtNum.Text = value.ToString();
-                    ValueChanged?.Invoke(this, new EventArgs());
+                    ValueChanged?.Invoke(this, EventArgs.Empty);
                 }
             }
         }

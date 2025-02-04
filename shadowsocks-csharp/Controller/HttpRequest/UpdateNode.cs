@@ -1,4 +1,4 @@
-﻿using Shadowsocks.Enums;
+using Shadowsocks.Enums;
 using Shadowsocks.Model;
 using System;
 using System.Net;
@@ -49,7 +49,7 @@ namespace Shadowsocks.Controller.HttpRequest
                 Logging.Debug(ex.ToString());
             }
 
-            NewFreeNodeFound?.Invoke(this, new EventArgs());
+            NewFreeNodeFound?.Invoke(this, EventArgs.Empty);
         }
     }
 }

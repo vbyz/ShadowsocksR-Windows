@@ -1,3 +1,5 @@
+using CryptoBase.Digests;
+using CryptoBase.Macs.Hmac;
 using System;
 using System.Collections.Generic;
 using System.Security.Cryptography;
@@ -17,8 +19,8 @@ namespace Shadowsocks.Obfs
         }
         private static Dictionary<string, int[]> _obfs = new()
         {
-                {"tls1.2_ticket_auth", new[]  {0, 1, 1}},
-                {"tls1.2_ticket_fastauth", new[]  {0, 1, 1}}
+            { "tls1.2_ticket_auth", new[] { 0, 1, 1 } },
+            { "tls1.2_ticket_fastauth", new[] { 0, 1, 1 } }
         };
 
         private int handshake_status;
@@ -27,7 +29,6 @@ namespace Shadowsocks.Obfs
         private uint send_id;
         private bool fastauth;
 
-        protected static RNGCryptoServiceProvider g_random = new();
         protected Random random = new();
         protected const int overhead = 5;
 
@@ -99,14 +100,15 @@ namespace Shadowsocks.Obfs
 
         protected void hmac_sha1(byte[] data, int length)
         {
-            var key = new byte[Server.key.Length + 32];
-            Server.key.CopyTo(key, 0);
-            ((TlsAuthData)Server.data).clientID.CopyTo(key, Server.key.Length);
+            Span<byte> key = new byte[Server.key.Length + 32];
+            Server.key.AsSpan().CopyTo(key);
+            ((TlsAuthData)Server.data).clientID.AsSpan().CopyTo(key[Server.key.Length..]);
 
-            var sha1 = new HMACSHA1(key);
-            var sha1data = sha1.ComputeHash(data, 0, length - 10);
-
-            Array.Copy(sha1data, 0, data, length - 10, 10);
+            using var hmac = HmacUtils.Create(DigestType.Sha1, key);
+            hmac.Update(data.AsSpan(0, length - 10));
+            Span<byte> hash = stackalloc byte[hmac.Length];
+            hmac.GetMac(hash);
+            hash[..10].CopyTo(data.AsSpan(length - 10, 10));
         }
 
         public void PackAuthData(byte[] outdata)
@@ -117,18 +119,14 @@ namespace Shadowsocks.Obfs
                 var randomdata = new byte[18];
                 lock (authData)
                 {
-                    g_random.GetBytes(randomdata);
+                    RandomNumberGenerator.Fill(randomdata);
                 }
                 randomdata.CopyTo(outdata, 4);
             }
 
             lock (authData)
             {
-                if (authData.clientID == null)
-                {
-                    authData.clientID = new byte[32];
-                    g_random.GetBytes(authData.clientID);
-                }
+                authData.clientID ??= RandomNumberGenerator.GetBytes(32);
             }
             var utc_time_second = (ulong)Math.Floor(DateTime.UtcNow.Subtract(new DateTime(1970, 1, 1, 0, 0, 0)).TotalSeconds);
             var utc_time = (uint)utc_time_second;
@@ -282,9 +280,8 @@ namespace Shadowsocks.Obfs
                         }
                         if (!authData.ticket_buf.ContainsKey(host ?? throw new InvalidOperationException()) || random.Next(16) == 0)
                         {
-                            var ticket_size = random.Next(32, 196) * 2;
-                            ticket = new byte[ticket_size];
-                            g_random.GetBytes(ticket);
+                            var ticketSize = random.Next(32, 196) * 2;
+                            ticket = RandomNumberGenerator.GetBytes(ticketSize);
                             authData.ticket_buf[host] = ticket;
                         }
                         else
@@ -379,7 +376,7 @@ namespace Shadowsocks.Obfs
                     Array.Copy(data_recv_buffer, 11, data, 0, 22);
                     hmac_sha1(data, data.Length);
 
-                    if (!Util.Utils.BitCompare(data_recv_buffer, 11 + 22, data, 22, 10))
+                    if (!data_recv_buffer.AsSpan(11 + 22, 10).SequenceEqual(data.AsSpan(22, 10)))
                     {
                         throw new ObfsException("ClientDecode data error: wrong sha1");
                     }
@@ -388,7 +385,7 @@ namespace Shadowsocks.Obfs
                     data = new byte[headerlength];
                     Array.Copy(data_recv_buffer, 0, data, 0, headerlength - 10);
                     hmac_sha1(data, headerlength);
-                    if (!Util.Utils.BitCompare(data_recv_buffer, headerlength - 10, data, headerlength - 10, 10))
+                    if (!data_recv_buffer.AsSpan(headerlength - 10, 10).SequenceEqual(data.AsSpan(headerlength - 10, 10)))
                     {
                         headerlength = 0;
                         while (headerlength < data_recv_buffer.Length &&
@@ -409,7 +406,7 @@ namespace Shadowsocks.Obfs
                         Array.Copy(data_recv_buffer, 0, data, 0, headerlength - 10);
                         hmac_sha1(data, headerlength);
 
-                        if (!Util.Utils.BitCompare(data_recv_buffer, headerlength - 10, data, headerlength - 10, 10))
+                        if (!data_recv_buffer.AsSpan(headerlength - 10, 10).SequenceEqual(data.AsSpan(headerlength - 10, 10)))
                         {
                             throw new ObfsException("ClientDecode data error: wrong sha1");
                         }
