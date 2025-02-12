@@ -1,3 +1,7 @@
+using CryptoBase.Abstractions;
+using CryptoBase.Abstractions.Digests;
+using CryptoBase.Digests;
+using CryptoBase.Macs.Hmac;
 using Shadowsocks.Controller;
 using Shadowsocks.Encryption;
 using Shadowsocks.Enums;
@@ -9,7 +13,7 @@ namespace Shadowsocks.Obfs
 {
     public class AuthAES128SHA1 : VerifySimpleBase
     {
-        protected delegate byte[] hash_func(Span<byte> input);
+        protected delegate byte[] hash_func(ReadOnlySpan<byte> input);
 
         protected class AuthDataAes128 : AuthData
         {
@@ -33,9 +37,7 @@ namespace Shadowsocks.Obfs
                 hash = CryptoUtils.SHA1;
             }
 
-            var bytes = new byte[4];
-            g_random.GetBytes(bytes);
-            random = new Random(BitConverter.ToInt32(bytes, 0));
+            random = new Random(RandomNumberGenerator.GetInt32(int.MaxValue));
         }
         private static Dictionary<string, int[]> _obfs = new()
         {
@@ -45,7 +47,6 @@ namespace Shadowsocks.Obfs
 
         protected bool has_sent_header;
         protected bool has_recv_header;
-        protected static RNGCryptoServiceProvider g_random = new();
         protected string SALT;
 
         protected uint pack_id;
@@ -94,19 +95,14 @@ namespace Shadowsocks.Obfs
             return overhead;
         }
 
-        protected HMAC CreateHMAC(byte[] key)
+        protected IMac CreateHMAC(byte[] key)
         {
-            if (Method == "auth_aes128_md5")
+            return Method switch
             {
-                return new HMACMD5(key);
-            }
-
-            if (Method == "auth_aes128_sha1")
-            {
-                return new HMACSHA1(key);
-            }
-
-            return null;
+                @"auth_aes128_md5" => HmacUtils.Create(DigestType.Md5, key),
+                @"auth_aes128_sha1" => HmacUtils.Create(DigestType.Sha1, key),
+                _ => null
+            };
         }
 
         protected void Sync()
@@ -254,10 +250,12 @@ namespace Shadowsocks.Obfs
                 rnd_data.CopyTo(outdata, 4);
             }
 
-            var sha1 = CreateHMAC(key);
+            using var sha1 = CreateHMAC(key);
             {
-                var sha1data = sha1.ComputeHash(outdata, 0, 2);
-                Array.Copy(sha1data, 0, outdata, 2, 2);
+                sha1.Update(outdata.AsSpan(0, 2));
+                Span<byte> span = stackalloc byte[sha1.Length];
+                sha1.GetMac(span);
+                span[..2].CopyTo(outdata.AsSpan(2, 2));
             }
             if (rand_len < 128)
             {
@@ -271,8 +269,10 @@ namespace Shadowsocks.Obfs
             }
             ++pack_id;
             {
-                var sha1data = sha1.ComputeHash(outdata, 0, outlength - 4);
-                Array.Copy(sha1data, 0, outdata, outlength - 4, 4);
+                sha1.Update(outdata.AsSpan(0, outlength - 4));
+                Span<byte> span = stackalloc byte[sha1.Length];
+                sha1.GetMac(span);
+                span[..4].CopyTo(outdata.AsSpan(outlength - 4, 4));
             }
         }
 
@@ -293,8 +293,7 @@ namespace Shadowsocks.Obfs
 
                     if (authData.clientID == null)
                     {
-                        authData.clientID = new byte[4];
-                        g_random.GetBytes(authData.clientID);
+                        authData.clientID = RandomNumberGenerator.GetBytes(4);
                         authData.connectionID = (uint)BitConverter.ToInt32(authData.clientID, 0) % 0xFFFFFD;
                     }
 
@@ -361,25 +360,29 @@ namespace Shadowsocks.Obfs
                 uid.CopyTo(encrypt, 0);
             }
             {
-                var sha1 = CreateHMAC(key);
-                var sha1data = sha1.ComputeHash(encrypt, 0, 20);
-                Array.Copy(sha1data, 0, encrypt, 20, 4);
-            }
-            {
+                using var sha1 = CreateHMAC(key);
+                sha1.Update(encrypt.AsSpan(0, 20));
+                Span<byte> span = stackalloc byte[sha1.Length];
+                sha1.GetMac(span);
+                span[..4].CopyTo(encrypt.AsSpan(20, 4));
+
                 var rnd = new byte[1];
                 random.NextBytes(rnd);
                 rnd.CopyTo(outdata, 0);
-                var sha1 = CreateHMAC(key);
-                var sha1data = sha1.ComputeHash(rnd, 0, rnd.Length);
-                Array.Copy(sha1data, 0, outdata, rnd.Length, 7 - rnd.Length);
+
+                sha1.Update(rnd);
+                sha1.GetMac(span);
+                span[..(7 - rnd.Length)].CopyTo(outdata.AsSpan(rnd.Length, 7 - rnd.Length));
             }
             encrypt.CopyTo(outdata, 7);
             Array.Copy(data, 0, outdata, data_offset, datalength);
 
             {
-                var sha1 = CreateHMAC(user_key);
-                var sha1data = sha1.ComputeHash(outdata, 0, outlength - 4);
-                Array.Copy(sha1data, 0, outdata, outlength - 4, 4);
+                using var sha1 = CreateHMAC(user_key);
+                sha1.Update(outdata.AsSpan(0, outlength - 4));
+                Span<byte> span = stackalloc byte[sha1.Length];
+                sha1.GetMac(span);
+                span[..4].CopyTo(outdata.AsSpan(outlength - 4, 4));
             }
         }
 
@@ -521,13 +524,16 @@ namespace Shadowsocks.Obfs
             outlength = 0;
             var key = new byte[user_key.Length + 4];
             user_key.CopyTo(key, 0);
+
+            Span<byte> span = stackalloc byte[HashConstants.Sha1Length];
             while (recv_buf_len > 4)
             {
                 BitConverter.GetBytes(recv_id).CopyTo(key, key.Length - 4);
-                var sha1 = CreateHMAC(key);
+                using var sha1 = CreateHMAC(key);
                 {
-                    var sha1data = sha1.ComputeHash(recv_buf, 0, 2);
-                    if (sha1data[0] != recv_buf[2] || sha1data[1] != recv_buf[3])
+                    sha1.Update(recv_buf.AsSpan(0, 2));
+                    sha1.GetMac(span);
+                    if (span[0] != recv_buf[2] || span[1] != recv_buf[3])
                     {
                         throw new ObfsException("ClientPostDecrypt data error");
                     }
@@ -543,16 +549,12 @@ namespace Shadowsocks.Obfs
                     break;
                 }
 
+                sha1.Update(recv_buf.AsSpan(0, len - 4));
+                sha1.GetMac(span);
+
+                if (!span[..4].SequenceEqual(recv_buf.AsSpan(len - 4, 4)))
                 {
-                    var sha1data = sha1.ComputeHash(recv_buf, 0, len - 4);
-                    if (sha1data[0] != recv_buf[len - 4]
-                        || sha1data[1] != recv_buf[len - 3]
-                        || sha1data[2] != recv_buf[len - 2]
-                        || sha1data[3] != recv_buf[len - 1]
-                    )
-                    {
-                        throw new ObfsException("ClientPostDecrypt data uncorrect checksum");
-                    }
+                    throw new ObfsException("ClientPostDecrypt data uncorrect checksum");
                 }
 
                 {
@@ -607,9 +609,11 @@ namespace Shadowsocks.Obfs
             Array.Copy(plaindata, 0, outdata, 0, datalength);
             user_id.CopyTo(outdata, datalength);
             {
-                var sha1 = CreateHMAC(user_key);
-                var sha1data = sha1.ComputeHash(outdata, 0, outlength - 4);
-                Array.Copy(sha1data, 0, outdata, outlength - 4, 4);
+                using var sha1 = CreateHMAC(user_key);
+                sha1.Update(outdata.AsSpan(0, outlength - 4));
+                Span<byte> span = stackalloc byte[sha1.Length];
+                sha1.GetMac(span);
+                span[..4].CopyTo(outdata.AsSpan(outlength - 4, 4));
             }
             return outdata;
         }
@@ -621,18 +625,18 @@ namespace Shadowsocks.Obfs
                 outlength = 0;
                 return plaindata;
             }
-            var sha1 = CreateHMAC(Server.key);
-            var sha1data = sha1.ComputeHash(plaindata, 0, datalength - 4);
-            if (sha1data[0] != plaindata[datalength - 4]
-                || sha1data[1] != plaindata[datalength - 3]
-                || sha1data[2] != plaindata[datalength - 2]
-                || sha1data[3] != plaindata[datalength - 1]
-            )
+            using var sha1 = CreateHMAC(Server.key);
+            sha1.Update(plaindata.AsSpan(0, datalength - 4));
+            Span<byte> span = stackalloc byte[sha1.Length];
+            sha1.GetMac(span);
+
+            if (span[..4].SequenceEqual(plaindata.AsSpan(datalength - 4, 4)))
             {
-                outlength = 0;
+                outlength = datalength - 4;
                 return plaindata;
             }
-            outlength = datalength - 4;
+
+            outlength = 0;
             return plaindata;
         }
 

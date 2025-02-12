@@ -19,15 +19,15 @@ namespace Shadowsocks.Controller.HttpRequest
         public event EventHandler NewVersionNotFound;
 
         public const string Name = @"ShadowsocksR";
-        public const string Copyright = @"Copyright © HMBSbige 2019 - 2020 & BreakWa11 2017. Fork from Shadowsocks by clowwindy";
-        public const string Version = @"5.2.5";
+        public const string Copyright = @"Copyright © 2019 - 2022 HMBSbige. Forked from ShadowsocksR by BreakWa11";
+        public const string Version = @"6.1.0";
 
         public const string FullVersion = Version +
-#if IsSelfContainedDotNetCore
+#if SelfContained
 #if Is64Bit
             @" x64" +
 #else
-            @"" +
+            @" x86" +
 #endif
 #endif
 #if DEBUG
@@ -56,13 +56,13 @@ namespace Shadowsocks.Controller.HttpRequest
                 if (Found)
                 {
                     LatestVersionUrl = updater.LatestVersionUrl;
-                    NewVersionFound?.Invoke(this, new EventArgs());
+                    NewVersionFound?.Invoke(this, EventArgs.Empty);
                 }
                 else
                 {
                     if (notifyNoFound)
                     {
-                        NewVersionNotFound?.Invoke(this, new EventArgs());
+                        NewVersionNotFound?.Invoke(this, EventArgs.Empty);
                     }
                 }
             }
@@ -71,7 +71,7 @@ namespace Shadowsocks.Controller.HttpRequest
                 Logging.LogUsefulException(e);
                 if (notifyNoFound)
                 {
-                    NewVersionFoundFailed?.Invoke(this, new EventArgs());
+                    NewVersionFoundFailed?.Invoke(this, EventArgs.Empty);
                 }
             }
         }

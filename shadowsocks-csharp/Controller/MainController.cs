@@ -6,7 +6,6 @@ using Shadowsocks.Model.Transfer;
 using Shadowsocks.Util;
 using System;
 using System.Collections.Generic;
-using System.ComponentModel;
 using System.IO;
 using System.Linq;
 using System.Net.Sockets;
@@ -30,7 +29,7 @@ namespace Shadowsocks.Controller
         private readonly ServerTransferTotal _transfer;
         private HostDaemon _hostDaemon;
         private IPRangeSet _chnRangeSet;
-        private HttpProxyRunner _privoxyRunner;
+        private HttpProxyRunner _httpProxyRunner;
         private GfwListUpdater _gfwListUpdater;
         private bool _stopped;
 
@@ -276,9 +275,17 @@ namespace Shadowsocks.Controller
         /// </summary>
         public void ToggleMode(ProxyMode mode)
         {
+            ProxyMode oldMode = Global.GuiConfig.SysProxyMode;
             Global.GuiConfig.SysProxyMode = mode;
             ReloadPacServer();
-            UpdateSystemProxy();
+            if (oldMode is not ProxyMode.NoModify && mode is ProxyMode.NoModify)
+            {
+                SystemProxy.Restore();
+            }
+            else
+            {
+                UpdateSystemProxy();
+            }
             SaveAndNotifyChanged();
         }
 
@@ -326,7 +333,7 @@ namespace Shadowsocks.Controller
         public void SaveAndNotifyChanged()
         {
             Global.SaveConfig();
-            Application.Current.Dispatcher?.InvokeAsync(() => { ConfigChanged?.Invoke(this, new EventArgs()); });
+            Application.Current.Dispatcher?.InvokeAsync(() => { ConfigChanged?.Invoke(this, EventArgs.Empty); });
         }
 
         /// <summary>
@@ -384,8 +391,11 @@ namespace Shadowsocks.Controller
             StopPortMap();
 
             _listener?.Stop();
-            _privoxyRunner?.Stop();
-            SystemProxy.Restore();
+            _httpProxyRunner?.Stop();
+            if (Global.GuiConfig.SysProxyMode is not ProxyMode.NoModify)
+            {
+                SystemProxy.Restore();
+            }
             ServerTransferTotal.Save(_transfer, Global.GuiConfig.Configs);
         }
 
@@ -441,10 +451,6 @@ namespace Shadowsocks.Controller
         {
             _chnRangeSet = new IPRangeSet();
             _chnRangeSet.LoadChn();
-            if (Global.GuiConfig.ProxyRuleMode == ProxyRuleMode.BypassLanAndNotChina)
-            {
-                _chnRangeSet.Reverse();
-            }
         }
 
         private void ReloadProxyRule()
@@ -460,24 +466,6 @@ namespace Shadowsocks.Controller
             HostMap.Reload();
         }
 
-        private void StartPrivoxy()
-        {
-            const int max = 5;
-            var i = 0;
-            while (true)
-            {
-                try
-                {
-                    _privoxyRunner.Start(Global.GuiConfig);
-                    break;
-                }
-                catch (Win32Exception) when (i < max)
-                {
-                    ++i;
-                }
-            }
-        }
-
         public void Reload()
         {
             StopPortMap();
@@ -489,10 +477,7 @@ namespace Shadowsocks.Controller
 
             ReloadProxyRule();
 
-            if (_privoxyRunner == null)
-            {
-                _privoxyRunner = new HttpProxyRunner();
-            }
+            _httpProxyRunner ??= new HttpProxyRunner();
             ReloadPacServer();
             if (_gfwListUpdater == null)
             {
@@ -502,22 +487,17 @@ namespace Shadowsocks.Controller
             }
 
             _listener?.Stop();
-
-            _privoxyRunner.Stop();
-            // don't put privoxyRunner.Start() before pacServer.Stop()
-            // or bind will fail when switching bind address from 0.0.0.0 to 127.0.0.1
-            // though UseShellExecute is set to true now
-            // http://stackoverflow.com/questions/10235093/socket-doesnt-close-after-application-exits-if-a-launched-process-is-open
+            _httpProxyRunner.Stop();
             try
             {
-                StartPrivoxy();
+                _httpProxyRunner.Start(Global.GuiConfig);
 
                 var local = new Local(Global.GuiConfig, _transfer, _chnRangeSet);
                 var services = new List<Listener.IService>
                 {
                     local,
                     _pacServer,
-                    new HttpPortForwarder(_privoxyRunner.RunningPort, Global.GuiConfig)
+                    new HttpPortForwarder(_httpProxyRunner.RunningPort, Global.GuiConfig)
                 };
                 _listener = new Listener(services);
                 _listener.Start(Global.GuiConfig, 0);
@@ -531,7 +511,7 @@ namespace Shadowsocks.Controller
 
             LoadPortMap();
 
-            Application.Current.Dispatcher?.InvokeAsync(() => { ConfigChanged?.Invoke(this, new EventArgs()); });
+            Application.Current.Dispatcher?.InvokeAsync(() => { ConfigChanged?.Invoke(this, EventArgs.Empty); });
 
             UpdateSystemProxy();
         }
@@ -586,12 +566,12 @@ namespace Shadowsocks.Controller
 
         public void ShowConfigForm(int? index = null)
         {
-            ShowConfigFormEvent?.Invoke(index, new EventArgs());
+            ShowConfigFormEvent?.Invoke(index, EventArgs.Empty);
         }
 
         public void ShowSubscribeWindow()
         {
-            ShowSubscribeWindowEvent?.Invoke(default, default);
+            ShowSubscribeWindowEvent?.Invoke(default, EventArgs.Empty);
         }
 
         /// <summary>

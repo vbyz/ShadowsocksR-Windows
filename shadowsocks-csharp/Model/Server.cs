@@ -1,10 +1,10 @@
-using System.Text.Json.Serialization;
 using Shadowsocks.Model.Transfer;
 using Shadowsocks.Util;
 using Shadowsocks.ViewModel;
 using System;
 using System.Collections.Generic;
 using System.Text;
+using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
 
 namespace Shadowsocks.Model
@@ -382,7 +382,7 @@ namespace Shadowsocks.Model
             SubTag = @"";
             UdpOverTcp = false;
             Enable = true;
-            Id = Rng.RandId();
+            Id = Guid.NewGuid().ToString(@"N");
             SpeedLog = new ServerSpeedLog();
             Index = 0;
             IsSelected = false;
@@ -536,7 +536,7 @@ namespace Shadowsocks.Model
             {
                 OnPropertyChanged(nameof(SsLink));
                 OnPropertyChanged(nameof(SsrLink));
-                ServerChanged?.Invoke(this, new EventArgs());
+                ServerChanged?.Invoke(this, EventArgs.Empty);
                 return true;
             }
             return false;
